@@ -1,0 +1,428 @@
+# Constants
+# ---------------------------------------------------------------------------
+SCREEN_WIDTH = 900
+SCREEN_HEIGHT = 700
+FPS = 60
+
+# Colors
+BLACK = (10, 10, 20)
+WHITE = (240, 240, 245)
+BLUE = (50, 120, 255)
+RED = (255, 70, 70)
+GREEN = (70, 255, 120)
+YELLOW = (255, 230, 60)
+ORANGE = (255, 160, 40)
+PURPLE = (180, 80, 255)
+CYAN = (60, 220, 255)
+PINK = (255, 100, 180)
+GRAY = (80, 80, 100)
+DARK = (20, 20, 35)
+
+# Game states
+MENU = "menu"
+PLAYING = "playing"
+PAUSED = "paused"
+GAME_OVER = "game_over"
+WIN = "win"
+
+# ---------------------------------------------------------------------------
+# Helper functions
+# ---------------------------------------------------------------------------
+def load_high_score():
+    try:
+        with open("brick_highscore.txt", "r") as f:
+            return int(f.read().strip())
+    except:
+        return 0
+
+def save_high_score(score):
+    try:
+        with open("brick_highscore.txt", "w") as f:
+            f.write(str(score))
+    except:
+        pass
+
+def draw_text(surface, text, size, color, x, y, center=True, bold=True):
+    font = pygame.font.SysFont("arial", size, bold=bold)
+    surf = font.render(text, True, color)
+    rect = surf.get_rect()
+    if center:
+        rect.center = (x, y)
+    else:
+        rect.topleft = (x, y)
+    surface.blit(surf, rect)
+    return rect
+
+# ---------------------------------------------------------------------------
+# Game Objects
+# ---------------------------------------------------------------------------
+class Paddle:
+    def __init__(self):
+        self.width = 140
+        self.height = 18
+        self.x = SCREEN_WIDTH // 2 - self.width // 2
+        self.y = SCREEN_HEIGHT - 50
+        self.speed = 12
+        self.color = BLUE
+        self.original_width = self.width
+        self.wide_timer = 0
+
+    def update(self, keys, mouse_x):
+        # Keyboard
+        if keys[pygame.K_LEFT] or keys[pygame.K_a]:
+            self.x -= self.speed
+        if keys[pygame.K_RIGHT] or keys[pygame.K_d]:
+            self.x += self.speed
+
+        # Mouse (overrides if moving)
+        if mouse_x is not None:
+            self.x = mouse_x - self.width // 2
+
+        # Boundaries
+        self.x = max(0, min(self.x, SCREEN_WIDTH - self.width))
+
+        # Power-up timer
+        if self.wide_timer > 0:
+            self.wide_timer -= 1
+            if self.wide_timer == 0:
+                self.width = self.original_width
+
+    def draw(self, screen):
+        rect = pygame.Rect(self.x, self.y, self.width, self.height)
+        pygame.draw.rect(screen, self.color, rect, border_radius=8)
+        pygame.draw.rect(screen, WHITE, rect, 2, border_radius=8)
+
+    def widen(self, duration=400):
+        self.width = min(self.original_width + 80, 260)
+        self.wide_timer = duration
+
+
+class Ball:
+    def __init__(self, x, y):
+        self.x = x
+        self.y = y
+        self.radius = 9
+        self.dx = 0
+        self.dy = 0
+        self.speed = 7
+        self.launched = False
+        self.color = YELLOW
+
+    def launch(self):
+        if not self.launched:
+            angle = random.uniform(-60, 60)
+            rad = math.radians(angle)
+            self.dx = self.speed * math.sin(rad)
+            self.dy = -self.speed * math.cos(rad)
+            self.launched = True
+
+    def update(self, paddle):
+        if not self.launched:
+            # Stick to paddle
+            self.x = paddle.x + paddle.width // 2
+            self.y = paddle.y - self.radius - 2
+            return
+
+        self.x += self.dx
+        self.y += self.dy
+
+        # Wall collisions
+        if self.x - self.radius <= 0 or self.x + self.radius >= SCREEN_WIDTH:
+            self.dx *= -1
+            self.x = max(self.radius, min(self.x, SCREEN_WIDTH - self.radius))
+        if self.y - self.radius <= 0:
+            self.dy *= -1
+            self.y = self.radius
+
+    def collide_paddle(self, paddle):
+        if (paddle.y <= self.y + self.radius <= paddle.y + paddle.height + 10 and
+            paddle.x <= self.x <= paddle.x + paddle.width and self.dy > 0):
+            # Hit position affects angle
+            hit_pos = (self.x - paddle.x) / paddle.width
+            angle = (hit_pos - 0.5) * 140  # -70 to +70 degrees
+            rad = math.radians(angle)
+            speed = math.hypot(self.dx, self.dy)
+            self.dx = speed * math.sin(rad)
+            self.dy = -abs(speed * math.cos(rad))
+            return True
+        return False
+
+    def draw(self, screen):
+        pygame.draw.circle(screen, self.color, (int(self.x), int(self.y)), self.radius)
+        pygame.draw.circle(screen, WHITE, (int(self.x), int(self.y)), self.radius, 2)
+
+
+class Brick:
+    def __init__(self, x, y, color, points=10):
+        self.rect = pygame.Rect(x, y, 70, 28)
+        self.color = color
+        self.points = points
+        self.alive = True
+
+    def draw(self, screen):
+        if self.alive:
+            pygame.draw.rect(screen, self.color, self.rect, border_radius=4)
+            pygame.draw.rect(screen, WHITE, self.rect, 2, border_radius=4)
+
+
+class PowerUp:
+    def __init__(self, x, y, kind):
+        self.x = x
+        self.y = y
+        self.kind = kind  # "wide", "multi", "slow"
+        self.speed = 3
+        self.radius = 12
+        self.alive = True
+
+    def update(self):
+        self.y += self.speed
+        if self.y > SCREEN_HEIGHT:
+            self.alive = False
+
+    def draw(self, screen):
+        colors = {"wide": GREEN, "multi": CYAN, "slow": PURPLE}
+        color = colors.get(self.kind, WHITE)
+        pygame.draw.circle(screen, color, (int(self.x), int(self.y)), self.radius)
+        # Letter
+        font = pygame.font.SysFont("arial", 14, bold=True)
+        letter = {"wide": "W", "multi": "M", "slow": "S"}.get(self.kind, "?")
+        surf = font.render(letter, True, BLACK)
+        screen.blit(surf, (self.x - 5, self.y - 8))
+
+
+class Particle:
+    def __init__(self, x, y, color):
+        self.x = x
+        self.y = y
+        self.color = color
+        angle = random.uniform(0, math.pi * 2)
+        speed = random.uniform(2, 6)
+        self.dx = math.cos(angle) * speed
+        self.dy = math.sin(angle) * speed
+        self.life = random.randint(20, 40)
+        self.size = random.randint(2, 5)
+
+    def update(self):
+        self.x += self.dx
+        self.y += self.dy
+        self.life -= 1
+        self.dy += 0.15  # gravity
+
+    def draw(self, screen):
+        if self.life > 0:
+            alpha = max(0, self.life * 6)
+            s = pygame.Surface((self.size*2, self.size*2), pygame.SRCALPHA)
+            pygame.draw.circle(s, (*self.color, alpha), (self.size, self.size), self.size)
+            screen.blit(s, (self.x - self.size, self.y - self.size))
+
+
+# ---------------------------------------------------------------------------
+# Main Game
+# ---------------------------------------------------------------------------
+class BrickBreaker:
+    def __init__(self):
+        pygame.init()
+        self.screen = pygame.display.set_mode((SCREEN_WIDTH, SCREEN_HEIGHT))
+        pygame.display.set_caption("Brick Breaker - Beginner's Edition")
+        self.clock = pygame.time.Clock()
+        self.running = True
+        self.state = MENU
+        self.high_score = load_high_score()
+        self.reset()
+
+    def reset(self, level=1):
+        self.level = level
+        self.score = 0 if level == 1 else self.score
+        self.lives = 3
+        self.paddle = Paddle()
+        self.balls = [Ball(SCREEN_WIDTH//2, SCREEN_HEIGHT - 80)]
+        self.bricks = []
+        self.powerups = []
+        self.particles = []
+        self.create_bricks()
+        self.combo = 0
+
+    def create_bricks(self):
+        colors = [RED, ORANGE, YELLOW, GREEN, CYAN, BLUE, PURPLE, PINK]
+        rows = 6 + self.level
+        cols = 11
+        start_y = 80
+        for row in range(rows):
+            for col in range(cols):
+                x = 30 + col * 78
+                y = start_y + row * 36
+                color = colors[row % len(colors)]
+                points = 10 + (rows - row) * 5
+                self.bricks.append(Brick(x, y, color, points))
+
+    def spawn_powerup(self, x, y):
+        if random.random() < 0.18:
+            kind = random.choice(["wide", "multi", "slow"])
+            self.powerups.append(PowerUp(x, y, kind))
+
+    def handle_events(self):
+        for event in pygame.event.get():
+            if event.type == pygame.QUIT:
+                self.running = False
+            if event.type == pygame.KEYDOWN:
+                if self.state == MENU and event.key == pygame.K_SPACE:
+                    self.state = PLAYING
+                    self.reset()
+                elif self.state == PLAYING:
+                    if event.key == pygame.K_SPACE:
+                        if not any(b.launched for b in self.balls):
+                            for b in self.balls:
+                                b.launch()
+                        else:
+                            self.state = PAUSED
+                    elif event.key == pygame.K_ESCAPE:
+                        self.running = False
+                elif self.state == PAUSED and event.key == pygame.K_SPACE:
+                    self.state = PLAYING
+                elif self.state in (GAME_OVER, WIN):
+                    if event.key == pygame.K_r:
+                        self.state = PLAYING
+                        self.reset()
+                    elif event.key == pygame.K_ESCAPE:
+                        self.running = False
+
+    def update(self):
+        if self.state != PLAYING:
+            return
+
+        keys = pygame.key.get_pressed()
+        mouse_x = pygame.mouse.get_pos()[0] if pygame.mouse.get_focused() else None
+        self.paddle.update(keys, mouse_x)
+
+        # Update balls
+        for ball in self.balls[:]:
+            ball.update(self.paddle)
+            ball.collide_paddle(self.paddle)
+
+            # Brick collisions
+            for brick in self.bricks:
+                if brick.alive and brick.rect.collidepoint(ball.x, ball.y):
+                    brick.alive = False
+                    self.score += brick.points + self.combo * 2
+                    self.combo += 1
+                    self.spawn_powerup(brick.rect.centerx, brick.rect.centery)
+                    # Particles
+                    for _ in range(12):
+                        self.particles.append(Particle(brick.rect.centerx, brick.rect.centery, brick.color))
+                    # Bounce
+                    ball.dy *= -1
+                    break
+
+            # Ball lost
+            if ball.y - ball.radius > SCREEN_HEIGHT:
+                self.balls.remove(ball)
+                if not self.balls:
+                    self.lives -= 1
+                    self.combo = 0
+                    if self.lives <= 0:
+                        if self.score > self.high_score:
+                            self.high_score = self.score
+                            save_high_score(self.high_score)
+                        self.state = GAME_OVER
+                    else:
+                        self.balls.append(Ball(self.paddle.x + self.paddle.width//2, self.paddle.y - 20))
+
+        # Power-ups
+        for pu in self.powerups[:]:
+            pu.update()
+            if (self.paddle.y <= pu.y <= self.paddle.y + self.paddle.height and
+                self.paddle.x <= pu.x <= self.paddle.x + self.paddle.width):
+                self.apply_powerup(pu.kind)
+                pu.alive = False
+            if not pu.alive:
+                self.powerups.remove(pu)
+
+        # Particles
+        for p in self.particles[:]:
+            p.update()
+            if p.life <= 0:
+                self.particles.remove(p)
+
+        # Win check
+        if all(not b.alive for b in self.bricks):
+            self.level += 1
+            self.reset(self.level)
+            # Keep score and lives
+
+    def apply_powerup(self, kind):
+        if kind == "wide":
+            self.paddle.widen()
+        elif kind == "multi" and len(self.balls) < 5:
+            for b in self.balls[:]:
+                new_ball = Ball(b.x, b.y)
+                new_ball.dx = -b.dx
+                new_ball.dy = b.dy
+                new_ball.launched = True
+                self.balls.append(new_ball)
+        elif kind == "slow":
+            for b in self.balls:
+                b.dx *= 0.7
+                b.dy *= 0.7
+
+    def draw(self):
+        self.screen.fill(DARK)
+
+        if self.state == MENU:
+            draw_text(self.screen, "BRICK BREAKER", 64, YELLOW, SCREEN_WIDTH//2, 180)
+            draw_text(self.screen, "Beginner's Edition", 32, WHITE, SCREEN_WIDTH//2, 250)
+            draw_text(self.screen, "Press SPACE to Start", 36, GREEN, SCREEN_WIDTH//2, 360)
+            draw_text(self.screen, f"High Score: {self.high_score}", 28, CYAN, SCREEN_WIDTH//2, 430)
+            draw_text(self.screen, "Mouse or Arrow Keys to Move Paddle", 22, GRAY, SCREEN_WIDTH//2, 500)
+            draw_text(self.screen, "SPACE to Launch / Pause | R Restart | ESC Quit", 18, GRAY, SCREEN_WIDTH//2, 540)
+
+        elif self.state in (PLAYING, PAUSED):
+            # Bricks
+            for brick in self.bricks:
+                brick.draw(self.screen)
+            # Paddle & balls
+            self.paddle.draw(self.screen)
+            for ball in self.balls:
+                ball.draw(self.screen)
+            # Power-ups & particles
+            for pu in self.powerups:
+                pu.draw(self.screen)
+            for p in self.particles:
+                p.draw(self.screen)
+
+            # HUD
+            draw_text(self.screen, f"Score: {self.score}", 28, WHITE, 100, 30, center=False)
+            draw_text(self.screen, f"Lives: {self.lives}", 28, WHITE, 280, 30, center=False)
+            draw_text(self.screen, f"Level: {self.level}", 28, WHITE, 460, 30, center=False)
+            draw_text(self.screen, f"High: {self.high_score}", 28, YELLOW, 680, 30, center=False)
+            if self.combo > 1:
+                draw_text(self.screen, f"Combo x{self.combo}", 24, ORANGE, SCREEN_WIDTH//2, 60)
+
+            if self.state == PAUSED:
+                s = pygame.Surface((SCREEN_WIDTH, SCREEN_HEIGHT), pygame.SRCALPHA)
+                s.fill((0, 0, 0, 160))
+                self.screen.blit(s, (0, 0))
+                draw_text(self.screen, "PAUSED", 60, YELLOW, SCREEN_WIDTH//2, SCREEN_HEIGHT//2)
+                draw_text(self.screen, "Press SPACE to Resume", 30, WHITE, SCREEN_WIDTH//2, SCREEN_HEIGHT//2 + 70)
+
+        elif self.state == GAME_OVER:
+            draw_text(self.screen, "GAME OVER", 70, RED, SCREEN_WIDTH//2, 220)
+            draw_text(self.screen, f"Final Score: {self.score}", 40, WHITE, SCREEN_WIDTH//2, 320)
+            draw_text(self.screen, f"High Score: {self.high_score}", 32, YELLOW, SCREEN_WIDTH//2, 380)
+            draw_text(self.screen, "Press R to Restart", 30, GREEN, SCREEN_WIDTH//2, 470)
+            draw_text(self.screen, "Press ESC to Quit", 24, GRAY, SCREEN_WIDTH//2, 520)
+
+        elif self.state == WIN:
+            draw_text(self.screen, "YOU WIN!", 70, GREEN, SCREEN_WIDTH//2, 220)
+            draw_text(self.screen, f"Final Score: {self.score}", 40, WHITE, SCREEN_WIDTH//2, 320)
+            draw_text(self.screen, "Press R to Play Again", 30, GREEN, SCREEN_WIDTH//2, 420)
+
+        pygame.display.flip()
+
+    def run(self):
+        while self.running:
+            self.handle_events()
+            self.update()
+            self.draw()
+            self.clock.tick(FPS)
+        pygame.quit()
+        sys.exit()
